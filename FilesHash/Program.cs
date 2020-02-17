@@ -38,7 +38,6 @@ namespace FilesHash
                 Console.Clear();
             }
 
-            DataBaseService.ResetDataBase();
             Console.WriteLine("Введите целевую директорию.");
             string dir = Console.ReadLine();
             Console.Clear();
@@ -56,9 +55,9 @@ namespace FilesHash
             Thread FilesSearchWorker = new Thread(() => FileSearchWorkerContext(dir));
             Thread DBSaverWorker = new Thread(() => DBSaverWorkerContext());
 
-            for (int i = 0; i < 15; i++)
+            for (int i = 0; i < 5; i++)
             {
-                ThreadPool.QueueUserWorkItem(FilesProcessWorkerContext);
+                new Thread(() => FilesProcessWorkerContext()).Start();
             }
 
             FilesSearchWorker.Start();
@@ -117,7 +116,7 @@ namespace FilesHash
             }
         }
 
-        private static void FilesProcessWorkerContext(object o)
+        private static void FilesProcessWorkerContext()
         {
             while (!FileSearchingEnd || FileNames.Count > 0)
             {
