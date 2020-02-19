@@ -1,7 +1,8 @@
-﻿using FilesHash.Services.DataBaseService;
+﻿using FilesHash.Common;
+using FilesHash.Services.DataBaseService;
 using FilesHash.Services.LoggerService;
 using System;
-using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Security.Cryptography;
 using System.Threading;
@@ -11,21 +12,20 @@ namespace FilesHash
     class Program
     {
         // Queues of names, errors and processing results
-        private static readonly Queue<string> FileNames = new Queue<string>();
-        private static readonly Queue<ProgramError> ProgramErrors = new Queue<ProgramError>();
-        private static readonly Queue<FileProcessResult> FileProcessResults = new Queue<FileProcessResult>();
+        private static readonly SynchronizedQueue<string> FileNames = new SynchronizedQueue<string>();
+        private static readonly SynchronizedQueue<ProgramError> ProgramErrors = new SynchronizedQueue<ProgramError>();
+        private static readonly SynchronizedQueue<FileProcessResult> FileProcessResults = new SynchronizedQueue<FileProcessResult>();
         // Services
         private static readonly IDataBaseService DataBaseService = new SQLiteDBService();
         private static readonly ILoggerService LoggerService = new ConsoleLoggerService();
-        // Multithreading objects
+
         private static bool FileSearchingEnd = false;
         private static bool FilesProcessingEnd = false;
-        private static readonly object FileNamesLocker = new object();
-        private static readonly object ProgramErrorsLocker = new object();
-        private static readonly object FileProcessResultsLocker = new object();
 
         static void Main()
         {
+            ConcurrentQueue<string> d = new ConcurrentQueue<string>();
+
             Console.WriteLine("Очистить базу данных перед началом работы программы? [Yes]");
             string userAnswer = Console.ReadLine();
 
@@ -78,24 +78,17 @@ namespace FilesHash
                 FileProcessResult currentFileProcessResult = null;
                 ProgramError currentProgramError = null;
 
-                lock (FileProcessResultsLocker)
+                try
                 {
-                    try
-                    {
-                        currentFileProcessResult = FileProcessResults.Dequeue();
-                    }
-                    catch (InvalidOperationException) { }
+                    currentFileProcessResult = FileProcessResults.Dequeue();
                 }
+                catch (InvalidOperationException) { }
 
-                lock(ProgramErrorsLocker)
-                { 
-                    try
-                    {
-                        currentProgramError = ProgramErrors.Dequeue();
-                    }
-                    catch (InvalidOperationException) { }
-
+                try
+                {
+                    currentProgramError = ProgramErrors.Dequeue();
                 }
+                catch (InvalidOperationException) { }
 
                 if (currentFileProcessResult == null && currentProgramError == null)
                 {
@@ -127,17 +120,15 @@ namespace FilesHash
 
                 string currentFileName = "";
 
-                lock (FileNamesLocker)
+                try
                 {
-                    try
-                    {
-                        currentFileName = FileNames.Dequeue();
-                    }
-                    catch (InvalidOperationException)
-                    {
-                        continue;
-                    }
+                    currentFileName = FileNames.Dequeue();
                 }
+                catch (InvalidOperationException)
+                {
+                    continue;
+                }
+
 
                 string hashSum = ComputeMD5Checksum(currentFileName);
 
@@ -145,17 +136,14 @@ namespace FilesHash
                 {
                     FileProcessResult currentFileProcessResult;
 
-                    lock (FileProcessResultsLocker)
-                    {
-                        currentFileProcessResult = new FileProcessResult(currentFileName, hashSum);
-                    }
+                    currentFileProcessResult = new FileProcessResult(currentFileName, hashSum);
 
                     FileProcessResults.Enqueue(currentFileProcessResult);
                     LoggerService.Info($"Расчет выполнен. {currentFileProcessResult}");
                 }
             }
 
-           
+
             FilesProcessingEnd = true;
         }
 
@@ -184,10 +172,7 @@ namespace FilesHash
         {
             LoggerService.Info($"Обнаружен файл: {path}");
 
-            lock (FileNamesLocker)
-            {
-                FileNames.Enqueue(path);
-            }
+            FileNames.Enqueue(path);
         }
 
         public static string ComputeMD5Checksum(string path)
@@ -204,49 +189,12 @@ namespace FilesHash
             {
                 ProgramError programError = new ProgramError(path, e.Message);
 
-                lock (ProgramErrorsLocker)
-                {
-                    ProgramErrors.Enqueue(programError);
-                }
+                ProgramErrors.Enqueue(programError);
 
                 LoggerService.Error($"Ошибка при обработке файла: {path}");
 
                 return null;
             }
-        }
-    }
-
-    class FileProcessResult
-    {
-        public string FileName { get; private set; }
-        public string HashSum { get; private set; }
-
-        public FileProcessResult(string fileName, string hashSum)
-        {
-            FileName = fileName;
-            HashSum = hashSum;
-        }
-
-        public override string ToString()
-        {
-            return $"Имя и путь: {FileName}, Hash sum: {HashSum}";
-        }
-    }
-
-    class ProgramError
-    {
-        public string FileName { get; private set; }
-        public string Message { get; private set; }
-
-        public ProgramError(string fileName, string message)
-        {
-            FileName = fileName;
-            Message = message;
-        }
-
-        public override string ToString()
-        {
-            return $"Имя и путь: {FileName}, Ошибка: {Message}";
         }
     }
 }

@@ -70,6 +70,9 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Common\FileProcessResult.cs" />
+    <Compile Include="Common\ProgramError.cs" />
+    <Compile Include="Common\SynchronizedQueue.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Services\DataBaseService\IDataBaseService.cs" />
