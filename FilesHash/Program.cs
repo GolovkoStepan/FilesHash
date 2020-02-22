@@ -19,13 +19,11 @@ namespace FilesHash
         private static readonly IDataBaseService DataBaseService = new SQLiteDBService();
         private static readonly ILoggerService LoggerService = new ConsoleLoggerService();
 
-        private static bool FileSearchingEnd = false;
-        private static bool FilesProcessingEnd = false;
+        private static volatile bool FileSearchingEnd = false;
+        private static volatile bool FilesProcessingEnd = false;
 
         static void Main()
         {
-            ConcurrentQueue<string> d = new ConcurrentQueue<string>();
-
             Console.WriteLine("Очистить базу данных перед началом работы программы? [Yes]");
             string userAnswer = Console.ReadLine();
 
