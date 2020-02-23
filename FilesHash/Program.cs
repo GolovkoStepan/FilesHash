@@ -2,7 +2,6 @@
 using FilesHash.Services.DataBaseService;
 using FilesHash.Services.LoggerService;
 using System;
-using System.Collections.Concurrent;
 using System.IO;
 using System.Security.Cryptography;
 using System.Threading;
@@ -18,9 +17,15 @@ namespace FilesHash
         // Services
         private static readonly IDataBaseService DataBaseService = new SQLiteDBService();
         private static readonly ILoggerService LoggerService = new ConsoleLoggerService();
-
+        // Counters
+        private static int FilesCounter = 0;
+        private static int ProcessCounter = 0;
+        private static int DBSaveCounter = 0;
+        // End flags
         private static volatile bool FileSearchingEnd = false;
         private static volatile bool FilesProcessingEnd = false;
+        // File processing threads count
+        private const int FileProcessThreadsCounter = 5;
 
         static void Main()
         {
@@ -32,10 +37,11 @@ namespace FilesHash
                 Console.Clear();
                 DataBaseService.ResetDataBase();
                 LoggerService.Success("База данных очищена!");
-                Thread.Sleep(2000);
+                Thread.Sleep(1500);
                 Console.Clear();
             }
 
+            Console.Clear();
             Console.WriteLine("Введите целевую директорию.");
             string dir = Console.ReadLine();
             Console.Clear();
@@ -51,15 +57,38 @@ namespace FilesHash
             }
 
             Thread FilesSearchWorker = new Thread(() => FileSearchWorkerContext(dir));
-            Thread DBSaverWorker = new Thread(() => DBSaverWorkerContext());
+            FilesSearchWorker.Start();
 
-            for (int i = 0; i < 5; i++)
+            Thread[] FileProcessThreads = new Thread[FileProcessThreadsCounter];
+            for (int i = 0; i < FileProcessThreadsCounter; i++)
             {
-                new Thread(() => FilesProcessWorkerContext()).Start();
+                FileProcessThreads[i] = new Thread(() => FilesProcessWorkerContext());
+                FileProcessThreads[i].Start();
             }
 
-            FilesSearchWorker.Start();
+            Thread DBSaverWorker = new Thread(() => DBSaverWorkerContext());
             DBSaverWorker.Start();
+
+            DBSaverWorker.Join();
+
+            Console.WriteLine("");
+            Console.WriteLine("=====================================");
+            Console.WriteLine($"===    Найдено файлов: {FilesCounter}");
+            Console.WriteLine($"=== Обработано файлов: {ProcessCounter}");
+            Console.WriteLine($"===    Сохранено в БД: {DBSaveCounter}");
+            Console.WriteLine("=====================================");
+            if (FilesCounter == ProcessCounter && FilesCounter == DBSaveCounter)
+            {
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"Выполено успешно!");
+                Console.ResetColor();
+            }
+            else
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"Выполено с ошибками!");
+                Console.ResetColor();
+            }
 
             Console.ReadKey();
         }
@@ -68,41 +97,24 @@ namespace FilesHash
         {
             while (!FilesProcessingEnd || FileProcessResults.Count > 0 || ProgramErrors.Count > 0)
             {
-                if (FileProcessResults.Count == 0 && ProgramErrors.Count == 0)
+                if (FileProcessResults.Count > 0)
                 {
-                    continue;
+                    if (FileProcessResults.TryDequeue(out FileProcessResult currentFileProcessResult))
+                    {
+                        DataBaseService.SaveFileProcessResult(currentFileProcessResult.FileName, currentFileProcessResult.HashSum);
+                        LoggerService.Success($"Данные сохранены. {currentFileProcessResult}");
+                    }
+                    DBSaveCounter++;
                 }
 
-                FileProcessResult currentFileProcessResult = null;
-                ProgramError currentProgramError = null;
-
-                try
+                if (ProgramErrors.Count > 0)
                 {
-                    currentFileProcessResult = FileProcessResults.Dequeue();
-                }
-                catch (InvalidOperationException) { }
-
-                try
-                {
-                    currentProgramError = ProgramErrors.Dequeue();
-                }
-                catch (InvalidOperationException) { }
-
-                if (currentFileProcessResult == null && currentProgramError == null)
-                {
-                    continue;
-                }
-
-                if (currentFileProcessResult != null)
-                {
-                    DataBaseService.SaveFileProcessResult(currentFileProcessResult.FileName, currentFileProcessResult.HashSum);
-                    LoggerService.Success($"Данные сохранены. {currentFileProcessResult}");
-                }
-
-                if (currentProgramError != null)
-                {
-                    DataBaseService.SaveError(currentProgramError.FileName, currentProgramError.Message);
-                    LoggerService.Success($"Ошибка сохранена. {currentProgramError}");
+                    if (ProgramErrors.TryDequeue(out ProgramError currentProgramError))
+                    {
+                        DataBaseService.SaveError(currentProgramError.FileName, currentProgramError.Message);
+                        LoggerService.Success($"Ошибка сохранена. {currentProgramError}");
+                    }
+                    DBSaveCounter++;
                 }
             }
         }
@@ -111,66 +123,64 @@ namespace FilesHash
         {
             while (!FileSearchingEnd || FileNames.Count > 0)
             {
-                if (FileNames.Count == 0)
+                if (FileNames.TryDequeue(out string currentFileName))
                 {
-                    continue;
-                }
+                    string hashSum = ComputeMD5Checksum(currentFileName);
 
-                string currentFileName = "";
+                    if (hashSum != null)
+                    {
+                        FileProcessResult currentFileProcessResult;
 
-                try
-                {
-                    currentFileName = FileNames.Dequeue();
-                }
-                catch (InvalidOperationException)
-                {
-                    continue;
-                }
+                        currentFileProcessResult = new FileProcessResult(currentFileName, hashSum);
 
-
-                string hashSum = ComputeMD5Checksum(currentFileName);
-
-                if (hashSum != null)
-                {
-                    FileProcessResult currentFileProcessResult;
-
-                    currentFileProcessResult = new FileProcessResult(currentFileName, hashSum);
-
-                    FileProcessResults.Enqueue(currentFileProcessResult);
-                    LoggerService.Info($"Расчет выполнен. {currentFileProcessResult}");
+                        FileProcessResults.Enqueue(currentFileProcessResult);
+                        LoggerService.Info($"Расчет выполнен. {currentFileProcessResult}");
+                        Interlocked.Increment(ref ProcessCounter);
+                    }
                 }
             }
 
-
             FilesProcessingEnd = true;
+            FileProcessResults.StopEnqueue();
         }
 
         private static void FileSearchWorkerContext(string dir)
         {
             ProcessDirectory(dir);
             FileSearchingEnd = true;
+            FileNames.StopEnqueue();
         }
 
         public static void ProcessDirectory(string targetDirectory)
         {
-            string[] fileEntries = Directory.GetFiles(targetDirectory);
-            foreach (string fileName in fileEntries)
+            try
             {
-                ProcessFile(fileName);
-            }
+                string[] fileEntries = Directory.GetFiles(targetDirectory);
 
-            string[] subdirectoryEntries = Directory.GetDirectories(targetDirectory);
-            foreach (string subdirectory in subdirectoryEntries)
+                foreach (string fileName in fileEntries)
+                {
+                    ProcessFile(fileName);
+                }
+
+                string[] subdirectoryEntries = Directory.GetDirectories(targetDirectory);
+                foreach (string subdirectory in subdirectoryEntries)
+                {
+                    ProcessDirectory(subdirectory);
+                }
+            }
+            catch (Exception e)
             {
-                ProcessDirectory(subdirectory);
+                ProgramError programError = new ProgramError(targetDirectory, e.Message);
+                ProgramErrors.Enqueue(programError);
+                LoggerService.Error($"Ошибка при обработке файла: {targetDirectory}");
             }
         }
 
         public static void ProcessFile(string path)
         {
             LoggerService.Info($"Обнаружен файл: {path}");
-
             FileNames.Enqueue(path);
+            FilesCounter++;
         }
 
         public static string ComputeMD5Checksum(string path)
@@ -186,9 +196,7 @@ namespace FilesHash
             catch (Exception e)
             {
                 ProgramError programError = new ProgramError(path, e.Message);
-
                 ProgramErrors.Enqueue(programError);
-
                 LoggerService.Error($"Ошибка при обработке файла: {path}");
 
                 return null;

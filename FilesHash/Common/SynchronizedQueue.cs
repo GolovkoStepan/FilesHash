@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Threading;
 
 namespace FilesHash.Common
 {
@@ -7,27 +8,46 @@ namespace FilesHash.Common
     {
         private readonly Object locker = new object();
         private readonly Queue<T> queue = new Queue<T>();
+        private bool stopEnqueue = false;
 
         public int Count { get { return queue.Count; } }
 
-        public void Enqueue(T item)
+        public void StopEnqueue()
         {
             lock (locker)
             {
-                queue.Enqueue(item);
+                stopEnqueue = true;
+                Monitor.PulseAll(locker);
             }
         }
 
-        public T Dequeue()
+        public void Enqueue(T item)
         {
-            T item;
+            lock(locker)
+            {
+                queue.Enqueue(item);
+                Monitor.PulseAll(locker);
+            }
+        }
 
+        public bool TryDequeue(out T item)
+        {
             lock (locker)
             {
-                item = queue.Dequeue();
-            }
+                while (queue.Count == 0)
+                {
+                    Monitor.Wait(locker);
 
-            return item;
+                    if (stopEnqueue)
+                    {
+                        item = default;
+                        return false;
+                    }
+                }
+
+                item = queue.Dequeue();
+                return true;
+            }
         }
 
     }
